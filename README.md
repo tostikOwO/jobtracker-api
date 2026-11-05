@@ -23,10 +23,13 @@ app/
   main.py        сборка приложения, /health
   config.py      настройки из env (pydantic-settings, префикс JT_)
   db.py          engine, sessionmaker, Base, зависимость get_db
-  models.py      ORM: Vacancy, Application, VacancyStatus
+  models.py      ORM: User, Vacancy, Application, VacancyStatus
   schemas.py     схемы запросов/ответов и валидация
+  security.py    argon2-хеши и JWT (создание/проверка)
+  deps.py        get_current_user: пользователь из Bearer-токена
   crud.py        вся логика работы с БД (без HTTP)
   api/
+    auth.py      /auth/register, /login, /refresh, /me
     vacancies.py роутер /vacancies и /vacancies/{id}/applications
     stats.py     роутер /stats
 alembic/         миграции
@@ -73,10 +76,40 @@ uv run alembic upgrade head
 Системная установка (если sudo доступен) — `sudo bash scripts/setup-postgres.sh`:
 пакет, `initdb`, служба, роль и база создаются идемпотентно.
 
+## Аутентификация
+
+Все эндпоинты `/vacancies` и `/stats` требуют `Authorization: Bearer <access_token>`,
+вакансии принадлежат пользователю: чужой ресурс отдаёт `404` (не подтверждаем,
+что такой id существует).
+
+```bash
+# регистрация и вход
+curl -X POST localhost:8000/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"strong-password"}'
+
+TOKEN=$(curl -s -X POST localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"me@example.com","password":"strong-password"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+curl localhost:8000/vacancies -H "Authorization: Bearer $TOKEN"
+```
+
+- пароли хранятся как **argon2id**-хеш (соль и параметры внутри хеша);
+- `access` живёт 15 минут, `refresh` — 7 дней; типы токенов различаются полем
+  `type`, поэтому access нельзя предъявить на `/auth/refresh` и наоборот;
+- секрет подписи — `JT_SECRET_KEY` в окружении (дефолт только для локального
+  запуска).
+
 ## Эндпоинты
 
 | Метод | Путь | Что делает |
 |---|---|---|
+| POST | `/auth/register` | регистрация (201, 409 если почта занята) |
+| POST | `/auth/login` | пара access + refresh токенов |
+| POST | `/auth/refresh` | обмен refresh на новую пару |
+| GET | `/auth/me` | текущий пользователь |
 | GET | `/health` | проверка живости |
 | POST | `/vacancies` | добавить вакансию (201, 409 если URL уже есть) |
 | GET | `/vacancies` | список: `status`, `remote`, `q`, `limit`, `offset` |
@@ -110,9 +143,11 @@ curl localhost:8000/stats
 uv run pytest
 ```
 
-12 тестов: CRUD, фильтры и пагинация, валидация диапазона зарплат (в том числе
+23 теста: CRUD, фильтры и пагинация, валидация диапазона зарплат (в том числе
 при частичном PATCH), конфликт по уникальному URL, однократность отклика
-и смена статуса, счётчики статистики. Тесты идут на SQLite в памяти через
+и смена статуса, счётчики статистики, плюс аутентификация: 401 без токена,
+409 на повторную почту, refresh, запрет access как refresh и изоляция данных
+между пользователями. Тесты идут на SQLite в памяти через
 `dependency_overrides` — Postgres для прогона не нужен.
 
 ## Решения, которые стоит объяснить на собеседовании
@@ -128,9 +163,20 @@ uv run pytest
   первый запрос после паузы падает.
 - **Статусы без записей отдаются нулями** в `/stats` — фронту не нужно
   подставлять отсутствующие ключи.
+- **Два токена вместо одного**: access короткий (15 мин), refresh длинный
+  (7 дней); в payload есть `type`, поэтому access не принимается на
+  `/auth/refresh`. Компромисс: access нельзя отозвать без хранения списка
+  отозванных — для учебного проекта это осознанно опущено.
+- **Чужой ресурс отдаёт 404, а не 403** — иначе клиент по коду ответа узнаёт,
+  что вакансия с таким id существует у кого-то другого.
+- **Логин не различает «нет пользователя» и «неверный пароль»** — одинаковый
+  401, чтобы не подтверждать существование почты.
+- **Уникальность URL составная** (`user_id`, `url`): два пользователя могут
+  отслеживать одну вакансию, а один — нет.
 
 ## Что дальше
 
-- Аутентификация (JWT) и привязка вакансий к пользователю
+- Отзыв токенов (blacklist) и роли пользователей
+- Rate limiting на `/auth/login` — защита от перебора паролей
 - Курсорная пагинация вместо offset на больших объёмах
 - CI (GitHub Actions): lint + pytest на каждый пуш

@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from .api import stats, vacancies
+from .api import auth, stats, vacancies
 from .config import get_settings
 
 settings = get_settings()
@@ -14,6 +14,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         summary="Учёт вакансий и откликов: REST API на FastAPI + SQLAlchemy 2.0",
     )
+    app.include_router(auth.router)
     app.include_router(vacancies.router)
     app.include_router(stats.router)
 

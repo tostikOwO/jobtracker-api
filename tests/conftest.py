@@ -1,4 +1,4 @@
-"""Фикстуры: приложение с SQLite в памяти вместо Postgres."""
+"""Фикстуры: SQLite в памяти вместо Postgres + авторизованный клиент."""
 
 from collections.abc import Iterator
 
@@ -10,6 +10,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
 from app.main import app
+
+TEST_USER = {"email": "test@example.com", "password": "secret-password"}
+OTHER_USER = {"email": "other@example.com", "password": "another-password"}
 
 
 @pytest.fixture
@@ -35,11 +38,31 @@ def client() -> Iterator[TestClient]:
     app.dependency_overrides[get_db] = override_get_db
     try:
         with TestClient(app) as test_client:
+            # По умолчанию клиент авторизован под первым пользователем:
+            # так CRUD-тесты не дублируют заголовок в каждом запросе.
+            test_client.post("/auth/register", json=TEST_USER)
+            token = test_client.post("/auth/login", json=TEST_USER).json()[
+                "access_token"
+            ]
+            test_client.headers.update({"Authorization": f"Bearer {token}"})
             yield test_client
     finally:
         app.dependency_overrides.clear()
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+@pytest.fixture
+def auth_headers(client: TestClient) -> dict[str, str]:
+    return {"Authorization": client.headers["Authorization"]}
+
+
+@pytest.fixture
+def other_headers(client: TestClient) -> dict[str, str]:
+    """Второй пользователь — для проверки изоляции данных."""
+    client.post("/auth/register", json=OTHER_USER)
+    response = client.post("/auth/login", json=OTHER_USER)
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 @pytest.fixture

@@ -4,22 +4,36 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import Application, Vacancy, VacancyStatus
+from .models import Application, User, Vacancy, VacancyStatus
 from .schemas import VacancyCreate, VacancyUpdate
+from .security import hash_password
 
 
 class DuplicateUrl(Exception):
-    """Такая вакансия уже добавлена (unique constraint на url)."""
+    """Такая вакансия уже добавлена у этого пользователя."""
 
 
 class AlreadyApplied(Exception):
     """Отклик на эту вакансию уже отправлен."""
 
 
-def create_vacancy(db: Session, data: VacancyCreate) -> Vacancy:
+def create_user(db: Session, email: str, password: str) -> User:
+    user = User(email=email.lower(), password_hash=hash_password(password))
+    db.add(user)
+    # IntegrityError не ловим здесь: роутер решает, что вернуть клиенту
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def get_user_by_email(db: Session, email: str) -> User | None:
+    return db.scalar(select(User).where(User.email == email.lower()))
+
+
+def create_vacancy(db: Session, data: VacancyCreate, user_id: int) -> Vacancy:
     payload = data.model_dump(exclude={"url"})
     payload["status"] = VacancyStatus(payload["status"]).value
-    vacancy = Vacancy(**payload, url=str(data.url))
+    vacancy = Vacancy(**payload, url=str(data.url), user_id=user_id)
     db.add(vacancy)
     try:
         db.commit()
@@ -32,6 +46,7 @@ def create_vacancy(db: Session, data: VacancyCreate) -> Vacancy:
 
 def list_vacancies(
     db: Session,
+    user_id: int,
     *,
     status: VacancyStatus | None = None,
     remote: bool | None = None,
@@ -39,7 +54,7 @@ def list_vacancies(
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[Vacancy], int]:
-    stmt = select(Vacancy)
+    stmt = select(Vacancy).where(Vacancy.user_id == user_id)
     if status is not None:
         stmt = stmt.where(Vacancy.status == status.value)
     if remote is not None:
@@ -61,8 +76,14 @@ def list_vacancies(
     return items, total
 
 
-def get_vacancy(db: Session, vacancy_id: int) -> Vacancy | None:
-    return db.get(Vacancy, vacancy_id)
+def get_vacancy(db: Session, vacancy_id: int, user_id: int) -> Vacancy | None:
+    # Фильтр по владельцу: чужая вакансия для нас не существует (404, не 403)
+    return db.scalar(
+        select(Vacancy).where(
+            Vacancy.id == vacancy_id,
+            Vacancy.user_id == user_id,
+        )
+    )
 
 
 def update_vacancy(db: Session, vacancy: Vacancy, data: VacancyUpdate) -> Vacancy:
@@ -122,10 +143,12 @@ def list_applications(db: Session, vacancy_id: int) -> list[Application]:
     )
 
 
-def get_stats(db: Session) -> dict:
+def get_stats(db: Session, user_id: int) -> dict:
     by_status = dict(
         db.execute(
-            select(Vacancy.status, func.count()).group_by(Vacancy.status)
+            select(Vacancy.status, func.count())
+            .where(Vacancy.user_id == user_id)
+            .group_by(Vacancy.status)
         ).all()
     )
     # Статусы, которых ещё нет в базе, отдаём нулями: фронту так проще.
@@ -133,7 +156,16 @@ def get_stats(db: Session) -> dict:
         by_status.setdefault(status.value, 0)
 
     return {
-        "total": db.scalar(select(func.count()).select_from(Vacancy)) or 0,
+        "total": db.scalar(
+            select(func.count()).select_from(Vacancy).where(Vacancy.user_id == user_id)
+        )
+        or 0,
         "by_status": by_status,
-        "applications": db.scalar(select(func.count()).select_from(Application)) or 0,
+        "applications": db.scalar(
+            select(func.count())
+            .select_from(Application)
+            .join(Vacancy, Vacancy.id == Application.vacancy_id)
+            .where(Vacancy.user_id == user_id)
+        )
+        or 0,
     }
