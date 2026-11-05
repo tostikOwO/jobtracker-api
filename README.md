@@ -54,6 +54,23 @@ uv run alembic upgrade head   # создать таблицы
 uv run uvicorn app.main:app --reload
 ```
 
+### Вариант 3: PostgreSQL без root (rootless)
+
+Если ставить пакет в систему нельзя, бинарники PostgreSQL 18.6 лежат в
+`~/.local/share/pgrootless` и запускаются от пользователя:
+
+```bash
+scripts/pg.sh start     # 127.0.0.1:55432
+scripts/pg.sh status
+scripts/pg.sh stop
+
+export JT_DATABASE_URL=postgresql+psycopg://jobtracker@127.0.0.1:55432/jobtracker
+uv run alembic upgrade head
+```
+
+Системная установка (если sudo доступен) — `sudo bash scripts/setup-postgres.sh`:
+пакет, `initdb`, служба, роль и база создаются идемпотентно.
+
 ## Эндпоинты
 
 | Метод | Путь | Что делает |
