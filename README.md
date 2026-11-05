@@ -1,5 +1,7 @@
 # jobtracker-api
 
+[![CI](https://github.com/tostikOwO/jobtracker-api/actions/workflows/ci.yml/badge.svg)](https://github.com/tostikOwO/jobtracker-api/actions/workflows/ci.yml)
+
 REST API для учёта вакансий и откликов: добавляешь вакансию, отмечаешь отклик,
 видишь сводку по статусам. Сделан как учебный backend-проект на стеке
 Python / FastAPI / SQLAlchemy 2.0 / PostgreSQL.
